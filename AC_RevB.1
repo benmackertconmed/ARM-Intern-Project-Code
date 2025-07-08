@@ -1,0 +1,215 @@
+import tkinter as tk
+import customtkinter as ctk
+from PIL import Image, ImageTk
+import threading
+import time
+import datetime
+import serial
+import numpy as np
+
+# === CONFIGURATION ===
+SERIAL_PORT = 'COM5'
+BAUD_RATE = 9600
+NUM_STEPS = 19
+
+# === GLOBAL STATE ===
+coeffs = None
+last_calibration_time = None
+resistance_value = 0.0
+stop_live = False
+pause_live_monitor = False
+shared_serial = None
+
+# === GUI SETUP ===
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+app = ctk.CTk()
+app.title("Pad Resistance Monitor")
+app.geometry("900x500")
+app.resizable(False, False)
+
+# === LEFT PANEL ===
+left_frame = ctk.CTkFrame(app, width=300)
+left_frame.pack(side="left", fill="y", padx=10, pady=10)
+
+calibrate_button = ctk.CTkButton(left_frame, text="Start Calibration")
+calibrate_button.pack(pady=20)
+
+last_cal_label = ctk.CTkLabel(left_frame, text="Last Calibration:\n—", justify="left")
+last_cal_label.pack(pady=10)
+
+timer_label = ctk.CTkLabel(left_frame, text="", font=("Arial", 14))
+timer_label.pack(pady=10)
+
+progress_bar = ctk.CTkProgressBar(left_frame, width=200)
+progress_bar.set(0)
+progress_bar.pack(pady=10)
+
+log_box = ctk.CTkTextbox(left_frame, width=250, height=140, font=("Courier", 10))
+log_box.pack(pady=10)
+log_box.insert("end", "Calibration Log:\n")
+log_box.configure(state="disabled")
+
+clock_label = ctk.CTkLabel(left_frame, text="", font=("Arial", 12))
+clock_label.pack(side="bottom", pady=10)
+
+# === RIGHT PANEL ===
+right_frame = ctk.CTkFrame(app)
+right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+resistance_label = ctk.CTkLabel(right_frame, text="Resistance: — Ω", font=("Arial", 24))
+resistance_label.pack(pady=20)
+
+canvas = tk.Canvas(right_frame, width=300, height=200, bg="black", highlightthickness=0)
+canvas.pack()
+
+# === LOAD IMAGES ===
+green_img = ImageTk.PhotoImage(Image.new("RGB", (300, 200), "green"))
+yellow_img = ImageTk.PhotoImage(Image.new("RGB", (300, 200), "yellow"))
+red_img = ImageTk.PhotoImage(Image.new("RGB", (300, 200), "red"))
+
+# === SERIAL FUNCTIONS ===
+def read_voltage(ser):
+    if not ser or not ser.is_open:
+        return 0.0
+    while True:
+        try:
+            line = ser.readline().decode('utf-8').strip()
+            if line:
+                voltage = float(line)
+                print(f"Raw voltage: {voltage:.3f} V")
+                return voltage
+        except Exception:
+            continue
+
+def read_reference_voltage(prompt, ser, label):
+    tk.messagebox.showinfo("Insert Resistor", prompt)
+    ser.reset_input_buffer()
+    time.sleep(0.5)
+    v = read_voltage(ser)
+    log_box.configure(state="normal")
+    log_box.insert("end", f"{label}: {v:.3f} V\n")
+    log_box.see("end")
+    log_box.configure(state="disabled")
+    return v
+
+def fit_resistance_vs_voltage(resistances, voltages, degree=4):
+    return np.polyfit(voltages, resistances, degree)
+
+def estimate_resistance(voltage, coeffs):
+    return np.polyval(coeffs, voltage)
+
+# === CALIBRATION THREAD ===
+def run_calibration():
+    global coeffs, last_calibration_time, shared_serial, pause_live_monitor
+
+    calibrate_button.configure(state="disabled")
+    timer_label.configure(text="Starting calibration...")
+    progress_bar.set(0)
+    pause_live_monitor = True
+
+    if shared_serial and shared_serial.is_open:
+        shared_serial.close()
+        time.sleep(1)
+
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=2)
+    ser.reset_input_buffer()
+    time.sleep(2)  # Let Arduino reset and begin sweep
+
+    digipot_resistances = np.array([
+        37, 47, 57, 66, 76, 86, 95, 105, 115, 125,
+        134, 144, 153, 163, 173, 182, 192, 202, 212
+    ])
+
+    digipot_voltages = []
+
+    log_box.configure(state="normal")
+    log_box.insert("end", "Reading sweep voltages...\n")
+    log_box.configure(state="disabled")
+
+    for i in range(NUM_STEPS):
+        v = read_voltage(ser)
+        digipot_voltages.append(v)
+        progress_bar.set((i + 1) / NUM_STEPS)
+        timer_label.configure(text=f"Step {i}/{NUM_STEPS - 1}")
+        log_box.configure(state="normal")
+        log_box.insert("end", f"Step {i:2d}: {v:.3f} V\n")
+        log_box.see("end")
+        log_box.configure(state="disabled")
+
+    digipot_voltages = np.array(digipot_voltages)
+
+    manual_resistances = np.array([1, 20, 30])
+    manual_voltages = np.array([0.437, 0.634, 0.707])
+
+    ref_10v = read_reference_voltage("Insert 10Ω resistor and press OK", ser, "10Ω Ref")
+    ref_150v = read_reference_voltage("Insert 150Ω resistor and press OK", ser, "150Ω Ref")
+
+    ref_resistances = np.array([10, 150])
+    ref_voltages = np.array([ref_10v, ref_150v])
+
+    ser.close()
+
+    all_resistances = np.concatenate((manual_resistances, digipot_resistances, ref_resistances))
+    all_voltages = np.concatenate((manual_voltages, digipot_voltages, ref_voltages))
+    coeffs = fit_resistance_vs_voltage(all_resistances, all_voltages)
+
+    last_calibration_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    last_cal_label.configure(text=f"Last Calibration:\n{last_calibration_time}")
+    timer_label.configure(text="Calibration complete")
+    progress_bar.set(1)
+    calibrate_button.configure(state="normal")
+
+    shared_serial = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=2)
+    shared_serial.reset_input_buffer()
+    time.sleep(2)
+    pause_live_monitor = False
+
+# === LIVE MONITORING THREAD ===
+def live_monitor():
+    global resistance_value, stop_live, shared_serial, pause_live_monitor
+
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=2)
+    shared_serial = ser
+    ser.reset_input_buffer()
+    time.sleep(2)
+
+    flash = False
+    while not stop_live:
+        if coeffs is None or pause_live_monitor or not shared_serial or not shared_serial.is_open:
+            time.sleep(0.1)
+            continue
+
+        voltage = read_voltage(shared_serial)
+        resistance_value = estimate_resistance(voltage, coeffs)
+        resistance_label.configure(text=f"Resistance: {resistance_value:.2f} Ω")
+
+        if resistance_value < 130:
+            canvas.create_image(0, 0, anchor="nw", image=green_img)
+        elif resistance_value < 150:
+            canvas.create_image(0, 0, anchor="nw", image=yellow_img)
+        else:
+            if flash:
+                canvas.create_image(0, 0, anchor="nw", image=red_img)
+            else:
+                canvas.delete("all")
+            flash = not flash
+
+        time.sleep(0.2)
+
+    ser.close()
+
+# === CLOCK UPDATE ===
+def update_clock():
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    clock_label.configure(text=f"Time: {now}")
+    app.after(1000, update_clock)
+
+# === STARTUP ===
+calibrate_button.configure(command=lambda: threading.Thread(target=run_calibration, daemon=True).start())
+threading.Thread(target=live_monitor, daemon=True).start()
+update_clock()
+
+app.mainloop()
+stop_live = True
