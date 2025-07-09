@@ -21,19 +21,41 @@ pause_live_monitor = False
 shared_serial = None
 
 # === GUI SETUP ===
-ctk.set_appearance_mode("dark")
+ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 app = ctk.CTk()
 app.title("Pad Resistance Monitor")
-app.geometry("900x500")
+app.geometry("1200x700")
 app.resizable(False, False)
 
+# === IMAGE CROPPING FUNCTION ===
+def manual_crop_image(image_path, size):
+    img = Image.open(image_path).convert("RGBA")
+    width, height = img.size
+    left = 272
+    top = 150
+    right = width - 260
+    bottom = height - 150
+    img = img.crop((left, top, right, bottom))
+    return ImageTk.PhotoImage(img.resize(size, Image.LANCZOS))
+
+# === LOAD PAD IMAGES ===
+canvas_width = 400
+canvas_height = 525
+green_img = manual_crop_image("pad_green.png", (canvas_width, canvas_height))
+yellow_img = manual_crop_image("pad_yellow.png", (canvas_width, canvas_height))
+red_img = manual_crop_image("pad_red.png", (canvas_width, canvas_height))
+
+# === HEADER ===
+header = ctk.CTkLabel(app, text="Pad Resistance Monitor", font=("Arial", 28, "bold"))
+header.pack(pady=10)
+
 # === LEFT PANEL ===
-left_frame = ctk.CTkFrame(app, width=300)
+left_frame = ctk.CTkFrame(app, width=300, corner_radius=10)
 left_frame.pack(side="left", fill="y", padx=10, pady=10)
 
-calibrate_button = ctk.CTkButton(left_frame, text="Start Calibration")
+calibrate_button = ctk.CTkButton(left_frame, text="Start Calibration", corner_radius=10)
 calibrate_button.pack(pady=20)
 
 last_cal_label = ctk.CTkLabel(left_frame, text="Last Calibration:\n—", justify="left")
@@ -46,28 +68,24 @@ progress_bar = ctk.CTkProgressBar(left_frame, width=200)
 progress_bar.set(0)
 progress_bar.pack(pady=10)
 
-log_box = ctk.CTkTextbox(left_frame, width=250, height=140, font=("Courier", 10))
+log_box = ctk.CTkTextbox(left_frame, width=230, height=300, font=("Courier", 10), corner_radius=10)
 log_box.pack(pady=10)
 log_box.insert("end", "Calibration Log:\n")
 log_box.configure(state="disabled")
 
-clock_label = ctk.CTkLabel(left_frame, text="", font=("Arial", 12))
+clock_label = ctk.CTkLabel(left_frame, text="Time: --:--:--", font=("Arial", 12))
 clock_label.pack(side="bottom", pady=10)
 
 # === RIGHT PANEL ===
-right_frame = ctk.CTkFrame(app)
+right_frame = ctk.CTkFrame(app, corner_radius=10, fg_color="white")
 right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
-resistance_label = ctk.CTkLabel(right_frame, text="Resistance: — Ω", font=("Arial", 24))
+resistance_label = ctk.CTkLabel(right_frame, text="Resistance: — Ω", font=("Arial", 24, "bold"))
 resistance_label.pack(pady=20)
 
-canvas = tk.Canvas(right_frame, width=300, height=200, bg="black", highlightthickness=0)
+canvas = tk.Canvas(right_frame, width=canvas_width, height=canvas_height, bg="white", highlightthickness=0)
 canvas.pack()
-
-# === LOAD IMAGES ===
-green_img = ImageTk.PhotoImage(Image.new("RGB", (300, 200), "green"))
-yellow_img = ImageTk.PhotoImage(Image.new("RGB", (300, 200), "yellow"))
-red_img = ImageTk.PhotoImage(Image.new("RGB", (300, 200), "red"))
+canvas_image = canvas.create_image(0, 0, anchor="nw", image=green_img)
 
 # === SERIAL FUNCTIONS ===
 def read_voltage(ser):
@@ -115,7 +133,7 @@ def run_calibration():
 
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=2)
     ser.reset_input_buffer()
-    time.sleep(2)  # Let Arduino reset and begin sweep
+    time.sleep(2)
 
     digipot_resistances = np.array([
         37, 47, 57, 66, 76, 86, 95, 105, 115, 125,
@@ -186,14 +204,11 @@ def live_monitor():
         resistance_label.configure(text=f"Resistance: {resistance_value:.2f} Ω")
 
         if resistance_value < 130:
-            canvas.create_image(0, 0, anchor="nw", image=green_img)
+            canvas.itemconfig(canvas_image, image=green_img)
         elif resistance_value < 150:
-            canvas.create_image(0, 0, anchor="nw", image=yellow_img)
+            canvas.itemconfig(canvas_image, image=yellow_img)
         else:
-            if flash:
-                canvas.create_image(0, 0, anchor="nw", image=red_img)
-            else:
-                canvas.delete("all")
+            canvas.itemconfig(canvas_image, image=red_img if flash else "")
             flash = not flash
 
         time.sleep(0.2)
@@ -201,15 +216,16 @@ def live_monitor():
     ser.close()
 
 # === CLOCK UPDATE ===
+
+# === STARTUP ===
+calibrate_button.configure(command=lambda: threading.Thread(target=run_calibration, daemon=True).start())
+threading.Thread(target=live_monitor, daemon=True).start()
+
 def update_clock():
     now = datetime.datetime.now().strftime("%H:%M:%S")
     clock_label.configure(text=f"Time: {now}")
     app.after(1000, update_clock)
 
-# === STARTUP ===
-calibrate_button.configure(command=lambda: threading.Thread(target=run_calibration, daemon=True).start())
-threading.Thread(target=live_monitor, daemon=True).start()
 update_clock()
-
 app.mainloop()
 stop_live = True
