@@ -7,6 +7,8 @@ const int numSamples = 50;
 const int trimCount = 5;
 const int maxSteps = 19;
 
+bool sweepDone = false;
+
 void setup() {
   pinMode(INC_PIN, OUTPUT);
   pinMode(UD_PIN, OUTPUT);
@@ -30,10 +32,16 @@ void setup() {
     delay(5000);
   }
   digitalWrite(CS_PIN, HIGH);
+
+  sweepDone = true;
 }
 
 void loop() {
-  // Do nothing after one sweep
+  if (sweepDone) {
+    float voltage = readAveragedVoltage();
+    Serial.println(voltage, 3);
+    delay(100);  // Live monitoring rate
+  }
 }
 
 void pulseINC() {
@@ -45,7 +53,7 @@ void pulseINC() {
 
 void resetDigipot() {
   digitalWrite(CS_PIN, LOW);
-  digitalWrite(UD_PIN, LOW);
+  digitalWrite(UD_PIN, LOW);  // Decrement
   for (int i = 0; i < 100; i++) {
     pulseINC();
   }
@@ -59,6 +67,7 @@ float readAveragedVoltage() {
     delay(2);
   }
 
+  // Sort samples
   for (int i = 0; i < numSamples - 1; i++) {
     for (int j = 0; j < numSamples - i - 1; j++) {
       if (samples[j] > samples[j + 1]) {
