@@ -1,24 +1,24 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-# 4th-order fit for Monitor-side Rpad(Varm)
+# 4th-order system polynomial: Rpad_m = f(Varm_m)
 def rpad_m(varm):
     return (
-          715.13226 * varm**4
-        -1620.07948 * varm**3
-        +1536.71187 * varm**2
-        - 534.80120 * varm
-        +  56.73790
+        715.13226 * varm**4
+      -1620.07948 * varm**3
+      +1536.71187 * varm**2
+      - 534.80120 * varm
+      +  56.73790
     )
 
-# Invert the polynomial to get ideal Varmₘ for a given resistance
+# Invert polynomial: find ideal Varm_m for a given target resistance
 def ideal_varm_for_resistance(R_target, vmin=0, vmax=3):
     coeffs = [
         715.13226,
        -1620.07948,
         1536.71187,
         -534.80120,
-        56.73790 - R_target
+         56.73790 - R_target
     ]
     roots = np.roots(coeffs)
     real_roots = [r.real for r in roots if np.isreal(r) and vmin <= r.real <= vmax]
@@ -27,7 +27,7 @@ def ideal_varm_for_resistance(R_target, vmin=0, vmax=3):
     mid = (vmin + vmax) / 2
     return min(real_roots, key=lambda r: abs(r - mid))
 
-# Measured data: Load (Ω) vs Monitor Voltage (M_VARM)
+# Transformer measurement data
 data = {
     "TF7":  {"load": np.array([1,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180]),
              "voltage": np.array([0.46,0.58,0.67,0.76,0.81,0.89,0.94,0.99,1.03,1.07,
@@ -40,10 +40,8 @@ data = {
                                   1.047,1.078,1.108,1.134,1.159,1.182,1.202,1.222,1.241])}
 }
 
-# 1) Prompt for number of calibration points
+# Prompt for calibration anchors
 n_pts = int(input("How many calibration points? "))
-
-# 2) Prompt for each anchor resistance
 cal_res = []
 for i in range(n_pts):
     R = int(input(f"  Anchor #{i+1} — resistance (Ω): "))
@@ -52,52 +50,50 @@ for i in range(n_pts):
     cal_res.append(R)
 cal_res = np.array(cal_res)
 
-# 3) Compute ideal scaled Varmₘ for each anchor
+# Compute target Varm_m values by inverting system polynomial
 y_targets = np.array([ideal_varm_for_resistance(R) for R in cal_res])
+
+# Print anchor summary
 print("\nAnchors and ideal scaled Varmₘ:")
 for R, y in zip(cal_res, y_targets):
     print(f"  {R} Ω → {y:.4f} V")
 
-# 4) Fit, apply and plot for each transformer
+# Create figure
 fig, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
-
 lms_list = []
+
 for ax, (tf, vals) in zip(axs, data.items()):
     loads   = vals["load"]
     raw_vol = vals["voltage"]
 
-    # Extract raw voltages at each anchor resistance
-    v_anchors = np.array([
-        raw_vol[np.where(loads == R)[0][0]] for R in cal_res
-    ])
+    v_anchors = np.array([raw_vol[np.where(loads == R)[0][0]] for R in cal_res])
+    coeffs    = np.polyfit(v_anchors, y_targets, deg=n_pts-1)
+    poly      = np.poly1d(coeffs)
 
-    # Fit calibration curve: raw M_VARM → scaled Varmₘ
-    coeffs = np.polyfit(v_anchors, y_targets, deg=n_pts-1)
-    poly   = np.poly1d(coeffs)
-
-    # Apply calibration and estimate resistance
     varm_m_est = poly(raw_vol)
     rpad_est   = rpad_m(varm_m_est)
 
-    # Compute LMS error for this transformer
     errors  = loads - rpad_est
     lms_err = np.mean(errors**2)
     lms_list.append(lms_err)
 
-    # Plot Measured vs Estimated
-    ax.plot(loads, loads,    'o-',  color='black',  label='Measured')
+    ax.plot(loads, loads,    'o-', color='black', label='Measured')
     ax.plot(loads, rpad_est, 's--', color='purple', label='Estimated')
     ax.set_title(f"{tf} — LMS Error = {lms_err:.2f} Ω²")
     ax.set_ylabel("Resistance (Ω)")
     ax.grid(True)
     ax.legend()
 
-# 5) Annotate average LMS error across all three transformers
+# Top annotation: number of anchors and values
+plt.subplots_adjust(top=0.90)
+anchor_text_top = f"Calibration Anchors Used: {len(cal_res)} points — {', '.join(str(R) + ' Ω' for R in cal_res)}"
+fig.text(0.5, 0.92, anchor_text_top, ha='center', fontsize=14)
+
+# Bottom annotation: anchor list and average LMS
 average_lms = np.mean(lms_list)
-fig.text(0.5, 0.04,
-         f"Average LMS Error (all transformers): {average_lms:.2f} Ω²",
-         ha='center', fontsize=12)
+anchor_text_bottom = f"Anchors: {', '.join(str(R) + ' Ω' for R in cal_res)}    |    Average LMS Error: {average_lms:.2f} Ω²"
+fig.text(0.5, 0.04, anchor_text_bottom, ha='center', fontsize=12)
 
 axs[-1].set_xlabel("Load (Ω)")
-plt.tight_layout(rect=[0, 0.05, 1, 1])
+plt.tight_layout(rect=[0, 0.06, 1, 0.88])
 plt.show()
